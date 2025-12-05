@@ -41,7 +41,3 @@ ctest --test-dir build
 После сборки запустить исполняемый файл из `build/src`
 (имя таргета см. в `src/CMakeLists.txt`), чтобы увидеть примеры использования
 (EventSystem, приоритеты, ScopedConnection, subscribeOnce, простая многопоточность).
-
-```
-::contentReference[oaicite:0]{index=0}
-```
