@@ -9,168 +9,204 @@
 
 #include "IDispatcher.hpp"
 
-namespace event_system::internal {
+namespace NEventSystem::NInternal {
 
     /// Диспетчер для конкретного типа события EventType.
-    template <typename EventType>
-    class Dispatcher: public IDispatcher {
+    template <typename TEvent>
+    class TDispatcher: public TIDispatcher {
     public:
-        using Callback = std::function<void(const EventType&)>;
+        using Callback = std::function<void(const TEvent&)>;
 
-        struct Slot {
-            HandlerId id;
-            Priority priority;
-            Callback callback;
-            bool is_one_shot;
-            std::atomic<bool> active;
+        struct TSlot {
+            THandlerId Id;
+            EPriority Priority;
+            Callback CallbackV;
+            bool IsOneShot;
+            std::atomic<bool> Active;
 
-            Slot(HandlerId id_,
-                 Priority priority_,
-                 Callback cb,
-                 bool one_shot)
-                : id(id_)
-                , priority(priority_)
-                , callback(std::move(cb))
-                , is_one_shot(one_shot)
-                , active(true) {
+            TSlot(THandlerId id_,
+                  EPriority PriorityV,
+                  Callback Cb,
+                  bool OneShot)
+                : Id(id_)
+                , Priority(PriorityV)
+                , CallbackV(std::move(Cb))
+                , IsOneShot(OneShot)
+                , Active(true) {
             }
         };
 
-        Dispatcher() = default;
-        ~Dispatcher() override = default;
+        TDispatcher() = default;
+        ~TDispatcher() override = default;
 
-        Dispatcher(const Dispatcher&) = delete;
-        Dispatcher& operator=(const Dispatcher&) = delete;
+        TDispatcher(const TDispatcher&) = delete;
+        TDispatcher& operator=(const TDispatcher&) = delete;
 
         /// Подписка обработчика (внутренняя, вызывается из EventSystem).
-        void subscribe(HandlerId id,
-                       Priority priority,
-                       Callback callback,
-                       bool one_shot) {
-            auto slot = std::make_shared<Slot>(id, priority, std::move(callback), one_shot);
+        void Subscribe(THandlerId Id,
+                       EPriority Priority,
+                       Callback Callback,
+                       bool OneShot) {
+            auto slot = std::make_shared<TSlot>(Id, Priority, std::move(Callback), OneShot);
 
-            std::unique_lock lock(mutex_);
-            slots_.push_back(std::move(slot));
+            std::unique_lock lock(Mutex);
+            Slots.push_back(std::move(slot));
 
-            // Стабильная сортировка по убыванию приоритета:
-            // HIGH → NORMAL → LOW.
             std::stable_sort(
-                slots_.begin(), slots_.end(),
-                [](const std::shared_ptr<Slot>& a,
-                   const std::shared_ptr<Slot>& b) {
-                    return static_cast<int>(a->priority) >
-                           static_cast<int>(b->priority);
+                Slots.begin(), Slots.end(),
+                [](const std::shared_ptr<TSlot>& a,
+                   const std::shared_ptr<TSlot>& b) {
+                    return static_cast<int>(a->Priority) >
+                           static_cast<int>(b->Priority);
                 });
         }
 
-        /// Логическое удаление обработчика по id.
-        bool remove(HandlerId id) override {
-            std::unique_lock lock(mutex_);
+        /// Логическое удаление обработчика по Id.
+        bool Remove(THandlerId Id) override {
+            std::unique_lock lock(Mutex);
             auto it = std::find_if(
-                slots_.begin(), slots_.end(),
-                [id](const std::shared_ptr<Slot>& slot) {
-                    return slot->id == id;
+                Slots.begin(), Slots.end(),
+                [Id](const std::shared_ptr<TSlot>& slot) {
+                    return slot->Id == Id;
                 });
 
-            if (it == slots_.end()) {
+            if (it == Slots.end()) {
                 return false;
             }
 
-            (*it)->active.store(false, std::memory_order_relaxed);
-            cleanupUnlocked();
+            (*it)->Active.store(false, std::memory_order_release);
+
+            CleanupUnlocked();
             return true;
         }
 
         /// Обычная диспетчеризация события.
         /// Используется EventSystem::dispatch.
-        void dispatch(const EventType& event) {
-            std::vector<std::shared_ptr<Slot>> snapshot;
+        void Dispatch(const TEvent& event) {
+            std::vector<std::shared_ptr<TSlot>> snapshot;
             {
-                std::shared_lock lock(mutex_);
-                snapshot = slots_;
+                std::shared_lock lock(Mutex);
+                snapshot = Slots;
             }
 
-            bool need_cleanup = false;
+            bool NeedCleanup = false;
 
-            for (const auto& slot : snapshot) {
-                if (!slot->active.load(std::memory_order_relaxed)) {
-                    continue;
+            try {
+                for (const auto& slot : snapshot) {
+                    if (slot->IsOneShot) {
+                        bool expected = true;
+                        if (!slot->Active.compare_exchange_strong(
+                                expected,
+                                false,
+                                std::memory_order_acq_rel,
+                                std::memory_order_acquire)) {
+                            continue;
+                        }
+
+                        NeedCleanup = true;
+                        slot->CallbackV(event);
+                        continue;
+                    }
+
+                    if (!slot->Active.load(std::memory_order_acquire)) {
+                        continue;
+                    }
+
+                    slot->CallbackV(event);
                 }
-
-                slot->callback(event);
-
-                if (slot->is_one_shot) {
-                    slot->active.store(false, std::memory_order_relaxed);
-                    need_cleanup = true;
+            } catch (...) {
+                if (NeedCleanup) {
+                    Cleanup();
                 }
+                throw;
             }
 
-            if (need_cleanup) {
-                cleanup();
+            if (NeedCleanup) {
+                Cleanup();
             }
         }
 
-        /// Вызвать ровно один обработчик по id.
+        /// Вызвать ровно один обработчик по Id.
         /// Используется EventSystem при подписке во время dispatch,
         /// чтобы новый обработчик поучаствовал в текущей диспетчеризации.
-        void invokeSingle(HandlerId id, const EventType& event) {
-            std::shared_ptr<Slot> slot;
+        void InvokeSingle(THandlerId id, const TEvent& Event) {
+            std::shared_ptr<TSlot> slot;
 
             {
-                std::shared_lock lock(mutex_);
+                std::shared_lock lock(Mutex);
                 auto it = std::find_if(
-                    slots_.begin(), slots_.end(),
-                    [id](const std::shared_ptr<Slot>& s) {
-                        return s->id == id;
+                    Slots.begin(), Slots.end(),
+                    [id](const std::shared_ptr<TSlot>& s) {
+                        return s->Id == id;
                     });
 
-                if (it == slots_.end()) {
+                if (it == Slots.end()) {
                     return;
                 }
 
                 slot = *it;
             }
 
-            if (!slot->active.load(std::memory_order_relaxed)) {
-                return;
+            bool NeedCleanup = false;
+
+            if (slot->IsOneShot) {
+                bool Expected = true;
+                if (!slot->Active.compare_exchange_strong(
+                        Expected,
+                        false,
+                        std::memory_order_acq_rel,
+                        std::memory_order_acquire)) {
+                    return;
+                }
+                NeedCleanup = true;
+            } else {
+                if (!slot->Active.load(std::memory_order_acquire)) {
+                    return;
+                }
             }
 
-            slot->callback(event);
+            try {
+                slot->CallbackV(Event);
+            } catch (...) {
+                if (NeedCleanup) {
+                    Cleanup();
+                }
+                throw;
+            }
 
-            if (slot->is_one_shot) {
-                slot->active.store(false, std::memory_order_relaxed);
-                cleanup();
+            if (NeedCleanup) {
+                Cleanup();
             }
         }
 
         /// Количество активных обработчиков.
-        std::size_t count() const override {
-            std::shared_lock lock(mutex_);
+        std::size_t Count() const override {
+            std::shared_lock lock(Mutex);
             return static_cast<std::size_t>(std::count_if(
-                slots_.begin(), slots_.end(),
-                [](const std::shared_ptr<Slot>& slot) {
-                    return slot->active.load(std::memory_order_relaxed);
+                Slots.begin(), Slots.end(),
+                [](const std::shared_ptr<TSlot>& slot) {
+                    return slot->Active.load(std::memory_order_relaxed);
                 }));
         }
 
     private:
-        void cleanup() {
-            std::unique_lock lock(mutex_);
-            cleanupUnlocked();
+        void Cleanup() {
+            std::unique_lock lock(Mutex);
+            CleanupUnlocked();
         }
 
-        void cleanupUnlocked() {
-            slots_.erase(
+        void CleanupUnlocked() {
+            Slots.erase(
                 std::remove_if(
-                    slots_.begin(), slots_.end(),
-                    [](const std::shared_ptr<Slot>& slot) {
-                        return !slot->active.load(std::memory_order_relaxed);
+                    Slots.begin(), Slots.end(),
+                    [](const std::shared_ptr<TSlot>& slot) {
+                        return !slot->Active.load(std::memory_order_relaxed);
                     }),
-                slots_.end());
+                Slots.end());
         }
 
-        mutable std::shared_mutex mutex_;
-        std::vector<std::shared_ptr<Slot>> slots_;
+        mutable std::shared_mutex Mutex;
+        std::vector<std::shared_ptr<TSlot>> Slots;
     };
 
-} // namespace event_system::internal
+} // namespace NEventSystem::NInternal

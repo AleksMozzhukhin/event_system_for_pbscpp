@@ -14,278 +14,265 @@
 #include "event_system/internal/IDispatcher.hpp"
 #include "event_system/internal/Dispatcher.hpp"
 
-namespace event_system {
+namespace NEventSystem {
 
     template <typename T>
     concept EventConstraint =
         std::is_class_v<T> && std::move_constructible<T>;
 
     /// Основной класс системы событий.
-    class EventSystem {
+    class TEventSystem {
     public:
-        using HandlerId = event_system::HandlerId;
-        using Priority = event_system::Priority;
+        using HandlerId = NEventSystem::THandlerId;
+        using Priority = NEventSystem::EPriority;
 
         /// RAII-обёртка для автоматической отписки обработчика.
-        class ScopedConnection {
+        class TScopedConnection {
         public:
-            ScopedConnection() = default;
+            TScopedConnection() = default;
 
-            ScopedConnection(EventSystem& system, HandlerId id)
-                : system_(&system)
-                , id_(id) {
+            TScopedConnection(TEventSystem& system, HandlerId id)
+                : System(&system)
+                , Id(id) {
             }
 
-            ScopedConnection(const ScopedConnection&) = delete;
-            ScopedConnection& operator=(const ScopedConnection&) = delete;
+            TScopedConnection(const TScopedConnection&) = delete;
+            TScopedConnection& operator=(const TScopedConnection&) = delete;
 
-            ScopedConnection(ScopedConnection&& other) noexcept
-                : system_(other.system_)
-                , id_(other.id_) {
-                other.system_ = nullptr;
-                other.id_ = 0;
+            TScopedConnection(TScopedConnection&& other) noexcept
+                : System(other.System)
+                , Id(other.Id) {
+                other.System = nullptr;
+                other.Id = 0;
             }
 
-            ScopedConnection& operator=(ScopedConnection&& other) noexcept {
+            TScopedConnection& operator=(TScopedConnection&& other) noexcept {
                 if (this != &other) {
-                    disconnect();
-                    system_ = other.system_;
-                    id_ = other.id_;
-                    other.system_ = nullptr;
-                    other.id_ = 0;
+                    Disconnect();
+                    System = other.System;
+                    Id = other.Id;
+                    other.System = nullptr;
+                    other.Id = 0;
                 }
                 return *this;
             }
 
-            ~ScopedConnection() {
-                disconnect();
+            ~TScopedConnection() {
+                Disconnect();
             }
 
-            void disconnect() {
-                if (system_ && id_ != 0) {
-                    system_->unsubscribe(id_);
-                    system_ = nullptr;
-                    id_ = 0;
+            void Disconnect() {
+                if (System && Id != 0) {
+                    System->Unsubscribe(Id);
+                    System = nullptr;
+                    Id = 0;
                 }
             }
 
         private:
-            EventSystem* system_ = nullptr;
-            HandlerId id_ = 0;
+            TEventSystem* System = nullptr;
+            HandlerId Id = 0;
         };
 
-        EventSystem() = default;
-        EventSystem(const EventSystem&) = delete;
-        EventSystem& operator=(const EventSystem&) = delete;
+        TEventSystem() = default;
+        TEventSystem(const TEventSystem&) = delete;
+        TEventSystem& operator=(const TEventSystem&) = delete;
 
         /// Подписка обработчика.
-        template <EventConstraint EventType>
-        HandlerId subscribe(Priority priority,
-                            std::function<void(const EventType&)> handler) {
-            const HandlerId id =
-                next_id_.fetch_add(1, std::memory_order_relaxed);
+        template <EventConstraint TEvent>
+        HandlerId Subscribe(Priority priority,
+                            std::function<void(const TEvent&)> handler) {
+            return SubscribeImpl<TEvent>(priority, std::move(handler), false);
+        }
 
-            auto& dispatcher = getDispatcher<EventType>();
-            dispatcher.subscribe(id, priority, std::move(handler), false);
+        template <EventConstraint TEvent>
+        HandlerId SubscribeOnce(Priority priority,
+                                std::function<void(const TEvent&)> handler) {
+            return SubscribeImpl<TEvent>(priority, std::move(handler), true);
+        }
+
+        template <EventConstraint TEvent>
+        HandlerId SubscribeImpl(Priority priority,
+                                std::function<void(const TEvent&)> handler,
+                                bool OneShot) {
+            const HandlerId id =
+                NextId.fetch_add(1, std::memory_order_relaxed);
+
+            auto& dispatcher = GetDispatcher<TEvent>();
+            dispatcher.Subscribe(id, priority, std::move(handler), OneShot);
 
             {
-                std::lock_guard lock(mutex_);
-                handler_types_.emplace(id,
-                                       std::type_index(typeid(EventType)));
+                std::lock_guard lock(Mutex);
+                HandlerTypes.emplace(id, std::type_index(typeid(TEvent)));
             }
 
-            // Если подписка происходит во время dispatch этого же события,
-            // сразу вызываем обработчик на текущем событии.
-            notifyCurrentDispatch<EventType>(id);
-
+            NotifyCurrentDispatch<TEvent>(id);
             return id;
         }
 
-        /// Подписка одноразового обработчика.
-        template <EventConstraint EventType>
-        HandlerId subscribeOnce(Priority priority,
-                                std::function<void(const EventType&)> handler) {
-            const HandlerId id =
-                next_id_.fetch_add(1, std::memory_order_relaxed);
-
-            auto& dispatcher = getDispatcher<EventType>();
-            dispatcher.subscribe(id, priority, std::move(handler), true);
-
-            {
-                std::lock_guard lock(mutex_);
-                handler_types_.emplace(id,
-                                       std::type_index(typeid(EventType)));
-            }
-
-            // Аналогично: если идёт текущий dispatch, новый обработчик
-            // должен выполниться на текущем событии.
-            notifyCurrentDispatch<EventType>(id);
-
-            return id;
+        /// Отписка обработчика (как в ТЗ): с указанием типа события.
+        template <EventConstraint TEvent>
+        void Unsubscribe(HandlerId Id) {
+            UnsubscribeImpl(Id);
         }
 
-        /// Отписка обработчика по id (тип события знать не нужно).
-        void unsubscribe(HandlerId id) {
-            std::type_index type(typeid(void));
-
-            {
-                std::lock_guard lock(mutex_);
-                auto it = handler_types_.find(id);
-                if (it == handler_types_.end()) {
-                    return;
-                }
-                type = it->second;
-                handler_types_.erase(it);
-            }
-
-            std::shared_ptr<internal::IDispatcher> base;
-            {
-                std::lock_guard lock(mutex_);
-                auto dit = dispatchers_.find(type);
-                if (dit == dispatchers_.end()) {
-                    return;
-                }
-                base = dit->second;
-            }
-
-            base->remove(id);
+        /// Отписка обработчика по Id (тип события знать не нужно).
+        void Unsubscribe(HandlerId Id) {
+            UnsubscribeImpl(Id);
         }
 
         /// Диспетчеризация события.
-        template <EventConstraint EventType>
-        void dispatch(const EventType& event) {
-            auto& dispatcher = getDispatcher<EventType>();
+        template <EventConstraint TEvent>
+        void Dispatch(const TEvent& Event) {
+            auto& Dispatcher = GetDispatcher<TEvent>();
 
-            DispatchFrame<EventType> frame(this, &dispatcher, &event);
-            DispatchFrameGuard guard(&frame);
+            TDispatchFrame<TEvent> Frame(this, &Dispatcher, &Event);
+            TDispatchFrameGuard Guard(&Frame);
 
-            dispatcher.dispatch(event);
+            Dispatcher.Dispatch(Event);
         }
 
         /// Количество активных обработчиков для заданного типа события.
-        template <typename EventType>
-        std::size_t getHandlerCount() const {
-            const auto type = std::type_index(typeid(EventType));
+        template <typename TEvent>
+        std::size_t GetHandlerCount() const {
+            const auto type = std::type_index(typeid(TEvent));
 
-            std::shared_ptr<internal::IDispatcher> base;
+            std::shared_ptr<NInternal::TIDispatcher> base;
             {
-                std::lock_guard lock(mutex_);
-                auto it = dispatchers_.find(type);
-                if (it == dispatchers_.end()) {
+                std::lock_guard lock(Mutex);
+                auto it = Dispatchers.find(type);
+                if (it == Dispatchers.end()) {
                     return 0;
                 }
                 base = it->second;
             }
 
-            return base->count();
+            return base->Count();
         }
 
     private:
-        template <typename EventType>
-        using DispatcherT = internal::Dispatcher<EventType>;
-
-        template <typename EventType>
-        DispatcherT<EventType>& getDispatcher() const {
-            const auto type = std::type_index(typeid(EventType));
+        void UnsubscribeImpl(HandlerId id) {
+            std::type_index type(typeid(void));
 
             {
-                std::lock_guard lock(mutex_);
-                auto it = dispatchers_.find(type);
-                if (it != dispatchers_.end()) {
-                    return *static_cast<DispatcherT<EventType>*>(
-                        it->second.get());
+                std::lock_guard lock(Mutex);
+                auto it = HandlerTypes.find(id);
+                if (it == HandlerTypes.end()) {
+                    return;
                 }
-
-                auto concrete =
-                    std::make_shared<DispatcherT<EventType>>();
-                dispatchers_.emplace(type, concrete);
-                return *concrete;
+                type = it->second;
+                HandlerTypes.erase(it);
             }
+
+            std::shared_ptr<NInternal::TIDispatcher> base;
+            {
+                std::lock_guard lock(Mutex);
+                auto dit = Dispatchers.find(type);
+                if (dit == Dispatchers.end()) {
+                    return;
+                }
+                base = dit->second;
+            }
+
+            base->Remove(id);
+        }
+
+        template <typename EventType>
+        using TDispatcher = NInternal::TDispatcher<EventType>;
+
+        template <typename EventType>
+        TDispatcher<EventType>& GetDispatcher() {
+            const auto type = std::type_index(typeid(EventType));
+
+            std::lock_guard lock(Mutex);
+
+            auto it = Dispatchers.find(type);
+            if (it != Dispatchers.end()) {
+                return *static_cast<TDispatcher<EventType>*>(it->second.get());
+            }
+
+            auto concrete = std::make_shared<TDispatcher<EventType>>();
+            Dispatchers.emplace(type, concrete);
+            return *concrete;
         }
 
         // --------- Стек контекстов диспетчеризации (thread_local) ---------
 
-        struct DispatchFrameBase {
-            const EventSystem* system;
-            std::type_index event_type;
+        struct TDispatchFrameBase {
+            const TEventSystem* System;
+            std::type_index EventTypeIndex;
 
-            DispatchFrameBase(const EventSystem* sys,
-                              std::type_index type)
-                : system(sys)
-                , event_type(type) {
+            TDispatchFrameBase(const TEventSystem* Sys, std::type_index Type)
+                : System(Sys)
+                , EventTypeIndex(Type) {
             }
-
-            virtual ~DispatchFrameBase() = default;
-
-            virtual void invokeNewHandler(HandlerId id) = 0;
+            virtual ~TDispatchFrameBase() = default;
+            virtual void InvokeNewHandler(THandlerId Id) = 0;
         };
 
         template <typename EventType>
-        struct DispatchFrame: DispatchFrameBase {
-            DispatcherT<EventType>* dispatcher;
-            const EventType* event;
+        struct TDispatchFrame: TDispatchFrameBase {
+            TDispatcher<EventType>* Dispatcher;
+            const EventType* Event;
 
-            DispatchFrame(const EventSystem* sys,
-                          DispatcherT<EventType>* disp,
-                          const EventType* ev)
-                : DispatchFrameBase(sys,
-                                    std::type_index(typeid(EventType)))
-                , dispatcher(disp)
-                , event(ev) {
+            TDispatchFrame(const TEventSystem* Sys,
+                           TDispatcher<EventType>* Disp,
+                           const EventType* Ev)
+                : TDispatchFrameBase(Sys, std::type_index(typeid(EventType)))
+                , Dispatcher(Disp)
+                , Event(Ev) {
             }
 
-            void invokeNewHandler(HandlerId id) override {
-                dispatcher->invokeSingle(id, *event);
+            void InvokeNewHandler(HandlerId id) override {
+                Dispatcher->InvokeSingle(id, *Event);
             }
         };
 
         /// RAII-guard: гарантирует, что pushFrame/popFrame будут парными
         /// даже при исключениях в обработчиках.
-        struct DispatchFrameGuard {
-            explicit DispatchFrameGuard(DispatchFrameBase* frame)
-                : frame_(frame) {
-                pushFrame(frame_);
+        struct TDispatchFrameGuard {
+            explicit TDispatchFrameGuard(TDispatchFrameBase* frame)
+                : Frame(frame) {
+                PushFrame(Frame);
             }
 
-            ~DispatchFrameGuard() {
-                popFrame();
+            ~TDispatchFrameGuard() {
+                PopFrame();
             }
 
-            DispatchFrameGuard(const DispatchFrameGuard&) = delete;
-            DispatchFrameGuard& operator=(const DispatchFrameGuard&) = delete;
+            TDispatchFrameGuard(const TDispatchFrameGuard&) = delete;
+            TDispatchFrameGuard& operator=(const TDispatchFrameGuard&) = delete;
 
         private:
-            DispatchFrameBase* frame_;
+            TDispatchFrameBase* Frame;
         };
 
-        inline static thread_local std::vector<DispatchFrameBase*>
-            dispatch_stack_;
+        inline static thread_local std::vector<TDispatchFrameBase*>
+            DispatchStack;
 
-        static void pushFrame(DispatchFrameBase* frame) {
-            dispatch_stack_.push_back(frame);
+        static void PushFrame(TDispatchFrameBase* frame) {
+            DispatchStack.push_back(frame);
         }
 
-        static void popFrame() {
-            dispatch_stack_.pop_back();
+        static void PopFrame() {
+            DispatchStack.pop_back();
         }
 
-        /// Если в текущем потоке идёт dispatch того же EventType для
+        /// Если в текущем потоке идёт dispatch того же TEvent для
         /// этого же EventSystem, вызываем только что подписанный обработчик
         /// на "текущем" событии.
         template <typename EventType>
-        void notifyCurrentDispatch(HandlerId id) {
-            if (dispatch_stack_.empty()) {
+        void NotifyCurrentDispatch(THandlerId Id) {
+            if (DispatchStack.empty()) {
                 return;
             }
 
-            const auto type = std::type_index(typeid(EventType));
+            const std::type_index Type(typeid(EventType));
 
-            for (auto it = dispatch_stack_.rbegin();
-                 it != dispatch_stack_.rend();
-                 ++it) {
-                DispatchFrameBase* frame = *it;
-                if (frame->system == this && frame->event_type == type) {
-                    frame->invokeNewHandler(id);
+            for (auto it = DispatchStack.rbegin(); it != DispatchStack.rend(); ++it) {
+                auto* Frame = *it;
+                if (Frame->System == this && Frame->EventTypeIndex == Type) {
+                    Frame->InvokeNewHandler(Id);
                     break;
                 }
             }
@@ -293,16 +280,15 @@ namespace event_system {
 
         // --------- Данные ---------
 
-        mutable std::mutex mutex_;
+        mutable std::mutex Mutex;
 
-        mutable std::unordered_map<std::type_index,
-                                   std::shared_ptr<internal::IDispatcher>>
-            dispatchers_;
+        std::unordered_map<std::type_index,
+                           std::shared_ptr<NInternal::TIDispatcher>>
+            Dispatchers;
 
-        mutable std::unordered_map<HandlerId, std::type_index>
-            handler_types_;
+        std::unordered_map<HandlerId, std::type_index> HandlerTypes;
 
-        mutable std::atomic<HandlerId> next_id_{1};
+        std::atomic<HandlerId> NextId{1};
     };
 
-} // namespace event_system
+} // namespace NEventSystem

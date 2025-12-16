@@ -2,31 +2,31 @@
 
 #include <cstddef>
 
-namespace event_system {
+namespace NEventSystem {
 
     /// Идентификатор обработчика события.
-    using HandlerId = std::size_t;
+    using THandlerId = std::size_t;
 
     /// Приоритет выполнения обработчиков.
-    enum class Priority { LOW,
-                          NORMAL,
-                          HIGH };
+    enum class EPriority { Low,
+                           Normal,
+                           High };
 
-    namespace internal {
+    namespace NInternal {
 
         /// Базовый интерфейс диспетчера для конкретного типа события.
         /// Нужен для type-erasure в EventSystem.
-        class IDispatcher {
+        class TIDispatcher {
         public:
-            virtual ~IDispatcher() = default;
+            virtual ~TIDispatcher() = default;
 
-            /// Логическое удаление обработчика по id.
+            /// Логическое удаление обработчика по Id.
             /// Возвращает true, если обработчик найден.
-            virtual bool remove(HandlerId id) = 0;
+            virtual bool Remove(THandlerId Id) = 0;
 
             /// Количество активных обработчиков.
-            virtual std::size_t count() const = 0;
+            [[nodiscard]] virtual std::size_t Count() const = 0;
         };
 
-    } // namespace internal
-} // namespace event_system
+    } // namespace NInternal
+} // namespace NEventSystem

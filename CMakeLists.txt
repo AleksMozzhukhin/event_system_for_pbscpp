@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(event_system)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(MSVC)
@@ -24,6 +24,7 @@ add_subdirectory(src)
 enable_testing()
 add_subdirectory(tests)
 
+# clang-format (auto format before build + optional check target)
 find_program(CLANG_FORMAT_EXECUTABLE NAMES clang-format)
 
 if(CLANG_FORMAT_EXECUTABLE)
@@ -36,17 +37,33 @@ if(CLANG_FORMAT_EXECUTABLE)
             ${CMAKE_SOURCE_DIR}/tests/advanced_tests.cpp
     )
 
+    # Format in-place:
+    #   cmake --build . --target clang_format
+    add_custom_target(
+            clang_format
+            COMMAND ${CLANG_FORMAT_EXECUTABLE} -i --style=file ${CLANG_FORMAT_SOURCES}
+            COMMENT "Running clang-format (in-place)"
+            VERBATIM
+    )
+
+    # Check-only:
     #   cmake --build . --target clang_format_check
     add_custom_target(
             clang_format_check
-            COMMAND ${CLANG_FORMAT_EXECUTABLE} --dry-run -Werror --style=file
-            ${CLANG_FORMAT_SOURCES}
-            COMMENT "Running clang-format Yandex style check"
+            COMMAND ${CLANG_FORMAT_EXECUTABLE} --dry-run -Werror --style=file ${CLANG_FORMAT_SOURCES}
+            COMMENT "Running clang-format check"
+            VERBATIM
+    )
+
+    add_custom_target(
+            clang_format_auto ALL
+            DEPENDS clang_format
     )
 
     add_test(
             NAME clang_format
-            COMMAND ${CLANG_FORMAT_EXECUTABLE} --dry-run -Werror --style=file
-            ${CLANG_FORMAT_SOURCES}
+            COMMAND ${CLANG_FORMAT_EXECUTABLE} --dry-run -Werror --style=file ${CLANG_FORMAT_SOURCES}
     )
+else()
+    message(STATUS "clang-format not found: formatting targets are disabled")
 endif()

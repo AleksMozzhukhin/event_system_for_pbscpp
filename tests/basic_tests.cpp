@@ -3,107 +3,107 @@
 #include <string>
 #include "event_system/EventSystem.hpp"
 
-using namespace event_system;
+using namespace NEventSystem;
 
 // --- Вспомогательные события ---
-struct IntEvent {
-    int value;
+struct TIntEvent {
+    int Value;
 };
 
-struct StringEvent {
-    std::string text;
+struct TStringEvent {
+    std::string Text;
 };
 
 // --- Тесты ---
 
 TEST(EventSystemBasic, SubscribeAndDispatch) {
-    EventSystem sys;
-    int acc = 0;
+    TEventSystem Sys;
+    int Acc = 0;
 
-    sys.subscribe<IntEvent>(EventSystem::Priority::NORMAL, [&acc](const IntEvent& e) {
-        acc += e.value;
+    Sys.Subscribe<TIntEvent>(TEventSystem::Priority::Normal, [&Acc](const TIntEvent& e) {
+        Acc += e.Value;
     });
 
-    sys.dispatch(IntEvent{10});
-    sys.dispatch(IntEvent{20});
+    Sys.Dispatch(TIntEvent{10});
+    Sys.Dispatch(TIntEvent{20});
 
-    EXPECT_EQ(acc, 30);
+    EXPECT_EQ(Acc, 30);
 }
 
 TEST(EventSystemBasic, Unsubscribe) {
-    EventSystem sys;
-    int call_count = 0;
+    TEventSystem Sys;
+    int CallCount = 0;
 
-    auto id = sys.subscribe<StringEvent>(EventSystem::Priority::NORMAL,
-                                         [&call_count](const StringEvent&) {
-                                             call_count++;
-                                         });
+    auto Id = Sys.Subscribe<TStringEvent>(TEventSystem::Priority::Normal,
+                                          [&CallCount](const TStringEvent&) {
+                                              CallCount++;
+                                          });
 
-    sys.dispatch(StringEvent{"Hello"});
-    EXPECT_EQ(call_count, 1);
+    Sys.Dispatch(TStringEvent{"Hello"});
+    EXPECT_EQ(CallCount, 1);
 
-    sys.unsubscribe(id);
-    sys.dispatch(StringEvent{"World"});
-    EXPECT_EQ(call_count, 1); // Не должно увеличиться
+    Sys.Unsubscribe(Id);
+    Sys.Dispatch(TStringEvent{"World"});
+    EXPECT_EQ(CallCount, 1); // Не должно увеличиться
 }
 
 TEST(EventSystemBasic, HandlerCount) {
-    EventSystem sys;
+    TEventSystem Sys;
     // Изначально 0
-    EXPECT_EQ(sys.getHandlerCount<IntEvent>(), 0);
+    EXPECT_EQ(Sys.GetHandlerCount<TIntEvent>(), 0);
 
-    auto id1 = sys.subscribe<IntEvent>(EventSystem::Priority::LOW, [](const auto&) {});
-    auto id2 = sys.subscribe<IntEvent>(EventSystem::Priority::HIGH, [](const auto&) {});
+    auto Id1 = Sys.Subscribe<TIntEvent>(TEventSystem::Priority::Low, [](const auto&) {});
+    auto Id2 = Sys.Subscribe<TIntEvent>(TEventSystem::Priority::High, [](const auto&) {});
 
-    EXPECT_EQ(sys.getHandlerCount<IntEvent>(), 2);
+    EXPECT_EQ(Sys.GetHandlerCount<TIntEvent>(), 2);
 
-    sys.unsubscribe(id1);
-    EXPECT_EQ(sys.getHandlerCount<IntEvent>(), 1);
+    Sys.Unsubscribe(Id1);
+    EXPECT_EQ(Sys.GetHandlerCount<TIntEvent>(), 1);
 
-    sys.unsubscribe(id2);
-    EXPECT_EQ(sys.getHandlerCount<IntEvent>(), 0);
+    Sys.Unsubscribe(Id2);
+    EXPECT_EQ(Sys.GetHandlerCount<TIntEvent>(), 0);
 }
 
 TEST(EventSystemBasic, PriorityOrder) {
-    EventSystem sys;
-    std::vector<std::string> log;
+    TEventSystem Sys;
+    std::vector<std::string> Log;
 
-    sys.subscribe<IntEvent>(EventSystem::Priority::LOW, [&log](const auto&) {
-        log.emplace_back("LOW");
+    Sys.Subscribe<TIntEvent>(TEventSystem::Priority::Low, [&Log](const auto&) {
+        Log.emplace_back("Low");
     });
-    sys.subscribe<IntEvent>(EventSystem::Priority::HIGH, [&log](const auto&) {
-        log.emplace_back("HIGH");
+    Sys.Subscribe<TIntEvent>(TEventSystem::Priority::High, [&Log](const auto&) {
+        Log.emplace_back("High");
     });
-    sys.subscribe<IntEvent>(EventSystem::Priority::NORMAL, [&log](const auto&) {
-        log.emplace_back("NORMAL");
+    Sys.Subscribe<TIntEvent>(TEventSystem::Priority::Normal, [&Log](const auto&) {
+        Log.emplace_back("Normal");
     });
 
-    sys.dispatch(IntEvent{0});
+    Sys.Dispatch(TIntEvent{0});
 
-    ASSERT_EQ(log.size(), 3);
-    EXPECT_EQ(log[0], "HIGH");
-    EXPECT_EQ(log[1], "NORMAL");
-    EXPECT_EQ(log[2], "LOW");
+    ASSERT_EQ(Log.size(), 3);
+    EXPECT_EQ(Log[0], "High");
+    EXPECT_EQ(Log[1], "Normal");
+    EXPECT_EQ(Log[2], "Low");
 }
 
 TEST(EventSystemBasic, MultipleEventTypes) {
-    EventSystem sys;
-    bool int_called = false;
-    bool str_called = false;
+    TEventSystem Sys;
+    bool IntCalled = false;
+    bool StrCalled = false;
 
-    sys.subscribe<IntEvent>(EventSystem::Priority::NORMAL, [&](const auto&) {
-        int_called = true;
+    Sys.Subscribe<TIntEvent>(TEventSystem::Priority::Normal, [&](const auto&) {
+        IntCalled = true;
     });
-    sys.subscribe<StringEvent>(EventSystem::Priority::NORMAL, [&](const auto&) {
-        str_called = true;
+    Sys.Subscribe<TStringEvent>(TEventSystem::Priority::Normal, [&](const auto&) {
+        StrCalled = true;
     });
 
-    sys.dispatch(IntEvent{1});
-    EXPECT_TRUE(int_called);
-    EXPECT_FALSE(str_called);
+    Sys.Dispatch(TIntEvent{1});
+    EXPECT_TRUE(IntCalled);
+    EXPECT_FALSE(StrCalled);
 
-    int_called = false;
-    sys.dispatch(StringEvent{"test"});
-    EXPECT_FALSE(int_called);
-    EXPECT_TRUE(str_called);
+    IntCalled = false;
+    Sys.Dispatch(TStringEvent{"test"});
+    EXPECT_FALSE(IntCalled);
+    EXPECT_TRUE(StrCalled);
 }
